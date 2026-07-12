@@ -1,5 +1,7 @@
 # Finance PR for Qonto MCP
 
+Our Demo: https://www.loom.com/share/d3570cc5067644a8822802788b483fcc
+
 **Review before money moves.**
 
 Qonto MCP lets Claude read structured business-finance data — organizations,
