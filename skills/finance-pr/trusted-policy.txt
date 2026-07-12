@@ -34,7 +34,8 @@ role.manager    = 5000
 role.employee   = 1000
 
 # Hard-block a specific supplier (compiled from "block Solutions Industrielles"):
-block_supplier = Solutions Industrielles, Acme Corp Software
+block_supplier = Solutions Industrielles
+block_supplier = Acme Corp Software
 
 # Operator-frozen FX so USD invoices are gated against the EUR limits above:
 fx.USD.EUR = 0.92
