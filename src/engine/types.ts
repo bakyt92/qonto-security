@@ -104,6 +104,16 @@ export interface TrustedPolicy {
   hard_block_amount: string;
   /** initiator role -> approval limit (decimal string), e.g. { owner: "10000" }. */
   role_limits: Record<string, string>;
+  /** Normalized supplier names to hard-block outright (matched against the
+   * STRUCTURED Qonto supplier_name field, never document text). Omitted when empty
+   * so the policy digest of a bare policy is unchanged. */
+  blocked_supplier_names?: string[];
+  /** Supplier ids (UUIDs) to hard-block outright (exact match on supplier_id). */
+  blocked_supplier_ids?: string[];
+  /** Operator-FROZEN FX rates: fx_rates[FROM][TO] = decimal rate (1 FROM = rate TO).
+   * A static operator constant, bound into the PR hash — NEVER a live/fetched rate.
+   * Used only to convert invoice.currency -> policy.currency for the limit checks. */
+  fx_rates?: Record<string, Record<string, string>>;
 }
 
 /** Redacted provenance summary that lives inside the hashed PR body. */
@@ -176,6 +186,7 @@ export type GateId =
   | 'not_already_paid_or_matched'
   | 'exact_duplicate_not_completed'
   | 'within_trusted_policy_hard_limit'
+  | 'supplier_not_blocked'
   // Act only
   | 'finance_pr_id_and_fingerprint_match'
   | 'full_hash_matches'
@@ -265,10 +276,22 @@ export interface FinancePrBody {
     source: 'trusted_file';
     currency: string;
     hard_block_amount: string;
-    /** digest binding the exact policy used (role limits + thresholds). */
+    /** digest binding the exact policy used (limits + block list + fx rates). */
     policy_digest: string;
     applied_role: string;
     applied_limit: string | null;
+    /** Display-only list of active supplier blocks (names + masked ids). Present
+     * only when the policy declared a block list. */
+    blocked_suppliers?: string[];
+    /** The operator-frozen conversion actually applied to this invoice, if any.
+     * Present only when invoice.currency !== policy.currency AND a rate existed. */
+    fx_applied?: {
+      from: string;
+      to: string;
+      rate: string;
+      converted_amount: string;
+      note: string;
+    };
   };
 
   sanitization: {

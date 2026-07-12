@@ -59,6 +59,15 @@ export function renderReport(result: PrepareResult): string {
     lines.push('TRUSTED POLICY (operator-authored file — explicitly trusted source)');
     lines.push(`  currency: ${tp.currency}   hard_block: ${tp.hard_block_amount}`);
     lines.push(`  initiator role: ${tp.applied_role}   approval limit: ${tp.applied_limit ?? '(none defined)'}`);
+    if (tp.blocked_suppliers?.length) {
+      lines.push(`  blocked suppliers: ${tp.blocked_suppliers.join(', ')}`);
+    }
+    if (tp.fx_applied) {
+      const fx = tp.fx_applied;
+      lines.push(
+        `  FX applied: ${fx.from}→${fx.to} @ ${fx.rate} → ${fx.converted_amount} ${fx.to}  (${fx.note})`,
+      );
+    }
     lines.push(`  policy digest: ${tp.policy_digest.slice(0, 16)}…`);
   }
   lines.push('');

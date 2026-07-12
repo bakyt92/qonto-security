@@ -15,6 +15,8 @@ import type {
 import { criticalFieldDiffs, criticalStateDigest } from './critical.js';
 import { canonicalize } from './canonical.js';
 import { sha256 } from 'js-sha256';
+import { fxRate, hasSupplierBlockList, supplierBlock } from './trustedPolicy.js';
+import { maskId } from './redact.js';
 
 // --- Prepare-phase gates ----------------------------------------------------
 
@@ -88,24 +90,49 @@ export function prepareGates(ev: Evidence, intent: IntentResult, trustedPolicy?:
     remediation: completedDuplicate ? 'Do not pay again; investigate the prior payment.' : undefined,
   });
 
-  // Trusted-policy hard threshold — added only when an operator policy file is
-  // supplied. A same-currency amount strictly above the hard block fails the gate,
-  // which the existing decision logic turns into `blocked`. Cross-currency is not
-  // evaluated (no conversion), consistent with the IBAN "nothing to compare" rule.
   if (trustedPolicy) {
+    // Supplier block list — added only when the policy declares one. Matched on the
+    // STRUCTURED Qonto supplier fields (id exact, name normalized), never on
+    // document text. A block fails the gate → the decision logic turns it `blocked`.
+    if (hasSupplierBlockList(trustedPolicy)) {
+      const block = supplierBlock(trustedPolicy, inv.supplier_name, inv.supplier_id);
+      gates.push({
+        id: 'supplier_not_blocked',
+        phase: 'prepare',
+        status: block.blocked ? 'fail' : 'pass',
+        reason: block.blocked
+          ? `blocked by policy: supplier ${
+              block.by === 'id' ? `id ${maskId(inv.supplier_id)}` : `"${inv.supplier_name}"`
+            } is on the trusted supplier block list.`
+          : 'Supplier is not on the trusted supplier block list.',
+        remediation: block.blocked
+          ? 'This supplier is blocked by trusted operator policy; resolve outside this tool.'
+          : undefined,
+      });
+    }
+
+    // Trusted-policy hard threshold. A (possibly converted) amount strictly above
+    // the hard block fails the gate. Cross-currency is evaluated ONLY via an
+    // operator-frozen rate; without one it is not evaluated (never converted).
     const sameCurrency = inv.amount.currency === trustedPolicy.currency;
-    const amount = Number.parseFloat(inv.amount.value);
+    const rawAmount = Number.parseFloat(inv.amount.value);
     const hard = Number.parseFloat(trustedPolicy.hard_block_amount);
-    const breach = sameCurrency && Number.isFinite(amount) && amount > hard;
+    const rate = sameCurrency ? null : fxRate(trustedPolicy, inv.amount.currency, trustedPolicy.currency);
+    const evaluable = sameCurrency || rate !== null;
+    const amount = rate !== null ? rawAmount * Number.parseFloat(rate) : rawAmount;
+    const conv = rate !== null
+      ? ` (converted from ${inv.amount.value} ${inv.amount.currency} at operator rate ${rate}, not a market rate)`
+      : '';
+    const breach = evaluable && Number.isFinite(amount) && amount > hard;
     gates.push({
       id: 'within_trusted_policy_hard_limit',
       phase: 'prepare',
       status: breach ? 'fail' : 'pass',
       reason: breach
-        ? `blocked by policy: amount ${amount} ${inv.amount.currency} exceeds the trusted hard-block threshold ${hard} ${trustedPolicy.currency}.`
-        : sameCurrency
-          ? `Amount is within the trusted policy hard-block threshold (${hard} ${trustedPolicy.currency}).`
-          : `Trusted policy hard limit not evaluated (invoice ${inv.amount.currency} ≠ policy ${trustedPolicy.currency}; no conversion).`,
+        ? `blocked by policy: amount ${amount.toFixed(2)} ${trustedPolicy.currency}${conv} exceeds the trusted hard-block threshold ${hard} ${trustedPolicy.currency}.`
+        : evaluable
+          ? `Amount ${amount.toFixed(2)} ${trustedPolicy.currency}${conv} is within the trusted policy hard-block threshold (${hard} ${trustedPolicy.currency}).`
+          : `Trusted policy hard limit not evaluated (invoice ${inv.amount.currency} ≠ policy ${trustedPolicy.currency}; no operator FX rate defined, no conversion).`,
       remediation: breach
         ? 'This amount cannot proceed under the trusted policy; escalate outside this tool.'
         : undefined,

@@ -10,7 +10,7 @@ import { criticalStateDigest, criticalStateDisplay } from './critical.js';
 import { canonicalize, digest, fingerprintFromHash } from './canonical.js';
 import { sha256 } from 'js-sha256';
 import { POLICY, policyDigest } from './policy.js';
-import { trustedPolicyDigest } from './trustedPolicy.js';
+import { fxRate, hasSupplierBlockList, trustedPolicyDigest } from './trustedPolicy.js';
 import { maskId, maskIban, stripSensitive } from './redact.js';
 import type { HeuristicReviewer, IndependentReviewer } from './reviewer.js';
 import {
@@ -208,6 +208,30 @@ export function prepare(input: PrepareInput): PrepareResult {
             policy_digest: trustedPolicyDigest(trustedPolicy),
             applied_role: ev.membership.role,
             applied_limit: trustedPolicy.role_limits[ev.membership.role] ?? null,
+            ...(hasSupplierBlockList(trustedPolicy)
+              ? {
+                  blocked_suppliers: [
+                    ...(trustedPolicy.blocked_supplier_names ?? []),
+                    ...(trustedPolicy.blocked_supplier_ids ?? []).map((i) => `id:${maskId(i)}`),
+                  ],
+                }
+              : {}),
+            ...(() => {
+              const invCur = ev.invoice.amount.currency;
+              if (invCur === trustedPolicy.currency) return {};
+              const rate = fxRate(trustedPolicy, invCur, trustedPolicy.currency);
+              if (rate === null) return {};
+              const converted = (Number.parseFloat(ev.invoice.amount.value) * Number.parseFloat(rate)).toFixed(2);
+              return {
+                fx_applied: {
+                  from: invCur,
+                  to: trustedPolicy.currency,
+                  rate,
+                  converted_amount: converted,
+                  note: 'operator-frozen rate, bound into this PR hash — not a market rate',
+                },
+              };
+            })(),
           },
         }
       : {}),

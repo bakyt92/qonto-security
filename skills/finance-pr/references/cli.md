@@ -21,10 +21,14 @@ npm run pr -- prepare --evidence evidence.json [--request "..."]
     [--policy trusted-policy.txt|.json]
     Build the immutable Finance PR. Prints the report + fingerprint + approval line.
     Persists to DIR (default .finance-pr).
-    --policy loads an EXPLICITLY TRUSTED operator policy file (never invoice text):
-      role approval limits + a hard-block threshold, in one currency (no conversion).
+    --policy loads an EXPLICITLY TRUSTED operator policy file (never invoice text).
+      Typed keys only (any other line throws; compile NL to these first, then ratify):
+        currency, hard_block, role.<name>, block_supplier, block_supplier_id,
+        fx.<FROM>.<TO> (operator-FROZEN rate, bound into the PR hash — never live).
       Over a role limit → "policy breach" signal → manual review.
       Over the hard block → within_trusted_policy_hard_limit gate fails → blocked.
+      Blocked supplier (structured supplier_name/id) → supplier_not_blocked gate → blocked.
+      Foreign currency converts ONLY via a frozen fx rate; otherwise not_applicable.
 
 npm run pr -- act --pr FPR-1 --approval "Approve Finance PR FPR-1, fingerprint XXXX-YYYY"
     [--fresh fresh_supplier_invoice.json] [--store DIR]

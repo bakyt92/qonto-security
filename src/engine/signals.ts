@@ -9,6 +9,7 @@
 import type { CoreSignalId, Evidence, IntentResult, RiskSummary, Signal, SignalId, TrustedPolicy } from './types.js';
 import { POLICY } from './policy.js';
 import { normalizeIban } from './redact.js';
+import { fxRate } from './trustedPolicy.js';
 
 const MIN_HISTORY_FOR_AMOUNT = 4;
 const NEAR_DAYS = 7;
@@ -198,21 +199,33 @@ function evalUntrustedInstruction(intent: IntentResult): Signal {
 
 /** Trusted-policy limit signal. Only evaluated when an explicitly trusted policy
  * file is supplied. Compares the invoice amount to the initiator role's approval
- * limit in the SAME currency — never converts across currencies. */
+ * limit in the policy currency. A cross-currency invoice is converted ONLY when
+ * the operator declared a frozen rate for that pair; otherwise it stays
+ * `not_applicable` (never converted). */
 function evalPolicyLimit(ev: Evidence, tp: TrustedPolicy): Signal {
   const id: SignalId = 'policy_amount_over_limit';
   const weight = TRUSTED_POLICY_SIGNAL_WEIGHT;
   const role = ev.membership.role;
+  const invCur = ev.invoice.amount.currency;
 
-  if (ev.invoice.amount.currency !== tp.currency) {
-    return {
-      id,
-      status: 'not_applicable',
-      risk: 0,
-      weight,
-      reason: `Trusted policy is denominated in ${tp.currency}; invoice is ${ev.invoice.amount.currency} — no conversion attempted, limit not evaluated.`,
-      evidence_refs: ['invoice.amount', 'trusted_policy'],
-    };
+  // Resolve the comparable amount in the policy currency (same-currency, or an
+  // operator-frozen conversion). `conv` labels the conversion for the reason.
+  let amount = amountNumber(ev.invoice.amount.value);
+  let conv = '';
+  if (invCur !== tp.currency) {
+    const rate = fxRate(tp, invCur, tp.currency);
+    if (rate === null) {
+      return {
+        id,
+        status: 'not_applicable',
+        risk: 0,
+        weight,
+        reason: `Trusted policy is denominated in ${tp.currency}; invoice is ${invCur} and no operator FX rate ${invCur}->${tp.currency} is defined — no conversion attempted, limit not evaluated.`,
+        evidence_refs: ['invoice.amount', 'trusted_policy'],
+      };
+    }
+    amount = amount * amountNumber(rate);
+    conv = ` (converted from ${ev.invoice.amount.value} ${invCur} at operator rate ${rate}, not a market rate)`;
   }
 
   const limitStr = tp.role_limits[role];
@@ -227,7 +240,6 @@ function evalPolicyLimit(ev: Evidence, tp: TrustedPolicy): Signal {
     };
   }
 
-  const amount = amountNumber(ev.invoice.amount.value);
   const limit = amountNumber(limitStr);
   if (!(amount > limit)) {
     return {
@@ -235,7 +247,7 @@ function evalPolicyLimit(ev: Evidence, tp: TrustedPolicy): Signal {
       status: 'observed',
       risk: 0,
       weight,
-      reason: `Amount ${amount} ${tp.currency} is within the initiator (${role}) approval limit ${limit}.`,
+      reason: `Amount ${amount.toFixed(2)} ${tp.currency}${conv} is within the initiator (${role}) approval limit ${limit}.`,
       evidence_refs: ['membership.role', 'trusted_policy'],
     };
   }
@@ -244,7 +256,7 @@ function evalPolicyLimit(ev: Evidence, tp: TrustedPolicy): Signal {
     status: 'observed',
     risk: 1,
     weight,
-    reason: `policy breach: amount exceeds initiator limit — ${amount} ${tp.currency} > ${role} limit ${limit}.`,
+    reason: `policy breach: amount exceeds initiator limit — ${amount.toFixed(2)} ${tp.currency}${conv} > ${role} limit ${limit}.`,
     evidence_refs: ['membership.role', 'trusted_policy'],
   };
 }
