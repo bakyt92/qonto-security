@@ -8,6 +8,7 @@ export * from './intent.js';
 export * from './signals.js';
 export * from './gates.js';
 export * from './policy.js';
+export * from './trustedPolicy.js';
 export * from './events.js';
 export * from './store.js';
 export * from './writeAdapter.js';

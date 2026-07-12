@@ -10,6 +10,7 @@ import { criticalStateDigest, criticalStateDisplay } from './critical.js';
 import { canonicalize, digest, fingerprintFromHash } from './canonical.js';
 import { sha256 } from 'js-sha256';
 import { POLICY, policyDigest } from './policy.js';
+import { trustedPolicyDigest } from './trustedPolicy.js';
 import { maskId, maskIban, stripSensitive } from './redact.js';
 import type { HeuristicReviewer, IndependentReviewer } from './reviewer.js';
 import {
@@ -25,6 +26,7 @@ import {
   type RiskSummary,
   type Signal,
   type StoredPr,
+  type TrustedPolicy,
   type UserRequest,
 } from './types.js';
 
@@ -37,6 +39,8 @@ export interface PrepareInput {
   prId?: string;
   /** optional escalate-only reviewer. */
   reviewer?: IndependentReviewer | HeuristicReviewer | null;
+  /** optional trusted operator policy (from a trusted file, never invoice text). */
+  trustedPolicy?: TrustedPolicy | null;
 }
 
 export interface PrepareResult {
@@ -126,9 +130,10 @@ export function prepare(input: PrepareInput): PrepareResult {
   const expires_at = addMinutes(created_at, POLICY.pr_ttl_minutes);
   const pr_id = input.prId ?? `FPR-${digest(ev.invoice.id, created_at, request.text).slice(0, 6).toUpperCase()}`;
 
+  const trustedPolicy = input.trustedPolicy ?? null;
   const intent = classifyIntent(request, ev.invoice.attachment_text);
-  const { signals, risk } = evaluateSignals(ev, intent);
-  const gates = prepareGates(ev, intent);
+  const { signals, risk } = evaluateSignals(ev, intent, trustedPolicy);
+  const gates = prepareGates(ev, intent, trustedPolicy);
 
   // Optional escalate-only independent review (ambiguous / high-value only).
   let review: ReviewOutput | null = null;
@@ -194,6 +199,18 @@ export function prepare(input: PrepareInput): PrepareResult {
       decision,
       reviewer_route: route,
     },
+    ...(trustedPolicy
+      ? {
+          trusted_policy: {
+            source: 'trusted_file' as const,
+            currency: trustedPolicy.currency,
+            hard_block_amount: trustedPolicy.hard_block_amount,
+            policy_digest: trustedPolicyDigest(trustedPolicy),
+            applied_role: ev.membership.role,
+            applied_limit: trustedPolicy.role_limits[ev.membership.role] ?? null,
+          },
+        }
+      : {}),
     sanitization: {
       untrusted_sources: ['supplier_invoice.attachment_text'],
       detected_instructions: intent.detected_instructions,

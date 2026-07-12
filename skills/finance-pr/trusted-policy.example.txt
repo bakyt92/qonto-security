@@ -1,0 +1,20 @@
+# Trusted finance policy — operator-authored, EXPLICITLY TRUSTED source.
+#
+# Drop your own copy of this file in the skill folder (e.g. trusted-policy.txt)
+# and point `prepare --policy` at it. This file is trusted CONFIG; it is NEVER
+# read from an invoice, PDF, email, or tool output. Amounts are decimal strings
+# in one currency and are compared, never converted.
+#
+# Format: `key = value`, one per line. Blank lines and `#` comments are ignored.
+#   currency       the ISO 4217 currency the limits below are denominated in
+#   hard_block      an amount strictly above this HARD-BLOCKS the PR
+#   role.<name>     the approval limit for an initiator with that Qonto role;
+#                   an amount above it raises a "policy breach" review signal
+
+currency   = EUR
+hard_block = 50000
+
+role.owner      = 10000
+role.admin      = 10000
+role.manager    = 5000
+role.employee   = 1000

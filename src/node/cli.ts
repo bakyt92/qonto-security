@@ -9,12 +9,15 @@ import {
   act,
   approvalFromText,
   parseApproval,
+  parseTrustedPolicyJson,
+  parseTrustedPolicyText,
   prepare,
   renderReport,
   shortSummary,
   systemClock,
   type Evidence,
   type SupplierInvoiceEvidence,
+  type TrustedPolicy,
   type UserRequest,
 } from '../engine/index.js';
 import { FileStore } from './fileStore.js';
@@ -42,8 +45,10 @@ Finance PR — review before money moves.  (synthetic by default; Qonto writes d
   finance-pr map    --bundle b.json [--out e.json]
                                              Map raw Qonto MCP JSON -> typed evidence
   finance-pr prepare --evidence e.json [--request "..."] [--source user_chat|document]
-                     [--pr FPR-1] [--store DIR]
-                                             Build the immutable Finance PR (no mutation)
+                     [--pr FPR-1] [--store DIR] [--policy trusted-policy.txt|.json]
+                                             Build the immutable Finance PR (no mutation).
+                                             --policy loads an explicitly trusted operator
+                                             policy (role limits + hard block). Never from invoice text.
   finance-pr act    --pr FPR-1 --approval "Approve Finance PR FPR-1, fingerprint 7C91-A2B4"
                      [--fresh rawInvoice.json] [--store DIR]
                                              Revalidate + one-shot. Terminates at ready_for_qonto.
@@ -97,10 +102,19 @@ function cmdPrepare(): void {
     source: (arg('source', 'user_chat') as UserRequest['source']),
     message_id: `cli-${Date.now()}`,
   };
+  // Optional trusted policy — loaded ONLY from an explicit operator file, never
+  // from the invoice/evidence. .json parses as JSON; anything else as key=value text.
+  const policyPath = arg('policy');
+  let trustedPolicy: TrustedPolicy | null = null;
+  if (policyPath) {
+    const text = readFileSync(policyPath, 'utf8');
+    trustedPolicy = policyPath.endsWith('.json') ? parseTrustedPolicyJson(JSON.parse(text)) : parseTrustedPolicyText(text);
+  }
+
   const dir = storeDir();
   const store = new FileStore(dir);
   const log = new EventLog(systemClock);
-  const result = prepare({ request, evidence, clock: systemClock, events: log, prId: arg('pr') });
+  const result = prepare({ request, evidence, clock: systemClock, events: log, prId: arg('pr'), trustedPolicy });
   store.putPr(result.stored);
   store.putLifecycle(result.stored.body.pr_id, result.decision === 'blocked' ? 'blocked' : 'prepared');
   persistEvents(store, log);
