@@ -88,6 +88,24 @@ export interface Evidence {
   unavailable_fields: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Trusted policy (explicitly trusted, operator-authored — never invoice text)
+// ---------------------------------------------------------------------------
+
+/** A small, deterministic finance policy loaded ONLY from a trusted operator
+ * file. Denominated in a single currency; amounts are compared, never converted.
+ * It never comes from invoice/document text. */
+export interface TrustedPolicy {
+  /** provenance marker — only a trusted operator file may set this. */
+  source: 'trusted_file';
+  /** ISO 4217 currency the limits are denominated in. */
+  currency: string;
+  /** decimal string; an amount strictly above this (same currency) hard-blocks. */
+  hard_block_amount: string;
+  /** initiator role -> approval limit (decimal string), e.g. { owner: "10000" }. */
+  role_limits: Record<string, string>;
+}
+
 /** Redacted provenance summary that lives inside the hashed PR body. */
 export interface EvidenceRef {
   source: DataMode;
@@ -134,12 +152,18 @@ export interface Signal {
   evidence_refs: string[];
 }
 
-export type SignalId =
+/** The five scored signals whose weights feed the hashed policy digest. */
+export type CoreSignalId =
   | 'possible_duplicate'
   | 'supplier_iban_drift'
   | 'unusual_amount'
   | 'evidence_gap_risk'
   | 'untrusted_instruction_indicator';
+
+/** All signal ids. `policy_amount_over_limit` is added only when a trusted
+ * policy file is supplied; it is NOT part of POLICY.signal_weights (so existing
+ * PR fingerprints are unchanged when no policy is used). */
+export type SignalId = CoreSignalId | 'policy_amount_over_limit';
 
 export type GateStatus = 'pass' | 'fail' | 'unknown';
 
@@ -151,6 +175,7 @@ export type GateId =
   | 'required_evidence_present'
   | 'not_already_paid_or_matched'
   | 'exact_duplicate_not_completed'
+  | 'within_trusted_policy_hard_limit'
   // Act only
   | 'finance_pr_id_and_fingerprint_match'
   | 'full_hash_matches'
@@ -233,6 +258,17 @@ export interface FinancePrBody {
     policy_digest: string;
     decision: PolicyDecision;
     reviewer_route: ReviewerRoute;
+  };
+
+  /** Present only when an operator trusted-policy file constrained this PR. */
+  trusted_policy?: {
+    source: 'trusted_file';
+    currency: string;
+    hard_block_amount: string;
+    /** digest binding the exact policy used (role limits + thresholds). */
+    policy_digest: string;
+    applied_role: string;
+    applied_limit: string | null;
   };
 
   sanitization: {

@@ -6,12 +6,16 @@
 //    excluded from the risk numerator but LOWERS coverage;
 //  - a low score with low coverage must never read as confidence.
 
-import type { Evidence, IntentResult, RiskSummary, Signal, SignalId } from './types.js';
+import type { CoreSignalId, Evidence, IntentResult, RiskSummary, Signal, SignalId, TrustedPolicy } from './types.js';
 import { POLICY } from './policy.js';
 import { normalizeIban } from './redact.js';
 
 const MIN_HISTORY_FOR_AMOUNT = 4;
 const NEAR_DAYS = 7;
+
+/** Weight of the trusted-policy signal. Kept OUT of POLICY.signal_weights so the
+ * hashed policy digest (and therefore existing PR fingerprints) never changes. */
+const TRUSTED_POLICY_SIGNAL_WEIGHT = 0.3;
 
 function amountNumber(value: string): number {
   return Number.parseFloat(value);
@@ -28,14 +32,14 @@ function daysBetween(a: string | null, b: string | null): number {
   return Math.abs(Date.parse(a) - Date.parse(b)) / 86_400_000;
 }
 
-function w(id: SignalId): number {
+function w(id: CoreSignalId): number {
   return POLICY.signal_weights[id];
 }
 
 // --- individual signals -----------------------------------------------------
 
 function evalUnusualAmount(ev: Evidence): Signal {
-  const id: SignalId = 'unusual_amount';
+  const id: CoreSignalId = 'unusual_amount';
   const amounts = ev.supplier_history
     .filter((h) => h.amount.currency === ev.invoice.amount.currency)
     .map((h) => amountNumber(h.amount.value))
@@ -68,7 +72,7 @@ function evalUnusualAmount(ev: Evidence): Signal {
 }
 
 function evalPossibleDuplicate(ev: Evidence): Signal {
-  const id: SignalId = 'possible_duplicate';
+  const id: CoreSignalId = 'possible_duplicate';
   const inv = ev.invoice;
 
   if (inv.has_duplicates) {
@@ -106,7 +110,7 @@ function evalPossibleDuplicate(ev: Evidence): Signal {
 }
 
 function evalIbanDrift(ev: Evidence, amountElevated: boolean, hasInstructions: boolean): Signal {
-  const id: SignalId = 'supplier_iban_drift';
+  const id: CoreSignalId = 'supplier_iban_drift';
   const invIban = normalizeIban(ev.invoice.iban);
   const known = ev.known_supplier_ibans.map((i) => normalizeIban(i)).filter(Boolean) as string[];
 
@@ -158,7 +162,7 @@ function evalIbanDrift(ev: Evidence, amountElevated: boolean, hasInstructions: b
 }
 
 function evalEvidenceGap(ev: Evidence): Signal {
-  const id: SignalId = 'evidence_gap_risk';
+  const id: CoreSignalId = 'evidence_gap_risk';
   const gaps: string[] = [];
   if (!ev.invoice.attachment_text) gaps.push('no extracted document text');
   if (!ev.invoice.issue_date) gaps.push('missing issue date');
@@ -176,7 +180,7 @@ function evalEvidenceGap(ev: Evidence): Signal {
 }
 
 function evalUntrustedInstruction(intent: IntentResult): Signal {
-  const id: SignalId = 'untrusted_instruction_indicator';
+  const id: CoreSignalId = 'untrusted_instruction_indicator';
   const hits = intent.detected_instructions;
   const strong = hits.some((h) => /approve|pay|authori|ignore|bypass|transfer|release|execute/i.test(h));
   const risk = hits.length === 0 ? 0 : strong ? 1 : 0.5;
@@ -189,6 +193,59 @@ function evalUntrustedInstruction(intent: IntentResult): Signal {
       ? `Instruction-like text found in untrusted document content: ${hits.map((h) => `“${h}”`).join('; ')}.`
       : 'No instruction-like text detected in document content.',
     evidence_refs: ['invoice.attachment_text'],
+  };
+}
+
+/** Trusted-policy limit signal. Only evaluated when an explicitly trusted policy
+ * file is supplied. Compares the invoice amount to the initiator role's approval
+ * limit in the SAME currency — never converts across currencies. */
+function evalPolicyLimit(ev: Evidence, tp: TrustedPolicy): Signal {
+  const id: SignalId = 'policy_amount_over_limit';
+  const weight = TRUSTED_POLICY_SIGNAL_WEIGHT;
+  const role = ev.membership.role;
+
+  if (ev.invoice.amount.currency !== tp.currency) {
+    return {
+      id,
+      status: 'not_applicable',
+      risk: 0,
+      weight,
+      reason: `Trusted policy is denominated in ${tp.currency}; invoice is ${ev.invoice.amount.currency} — no conversion attempted, limit not evaluated.`,
+      evidence_refs: ['invoice.amount', 'trusted_policy'],
+    };
+  }
+
+  const limitStr = tp.role_limits[role];
+  if (limitStr === undefined) {
+    return {
+      id,
+      status: 'not_applicable',
+      risk: 0,
+      weight,
+      reason: `No approval limit defined for initiator role "${role}" in the trusted policy.`,
+      evidence_refs: ['membership.role', 'trusted_policy'],
+    };
+  }
+
+  const amount = amountNumber(ev.invoice.amount.value);
+  const limit = amountNumber(limitStr);
+  if (!(amount > limit)) {
+    return {
+      id,
+      status: 'observed',
+      risk: 0,
+      weight,
+      reason: `Amount ${amount} ${tp.currency} is within the initiator (${role}) approval limit ${limit}.`,
+      evidence_refs: ['membership.role', 'trusted_policy'],
+    };
+  }
+  return {
+    id,
+    status: 'observed',
+    risk: 1,
+    weight,
+    reason: `policy breach: amount exceeds initiator limit — ${amount} ${tp.currency} > ${role} limit ${limit}.`,
+    evidence_refs: ['membership.role', 'trusted_policy'],
   };
 }
 
@@ -217,7 +274,11 @@ export function aggregate(signals: Signal[]): RiskSummary {
   return { observed_risk, coverage, band };
 }
 
-export function evaluateSignals(ev: Evidence, intent: IntentResult): { signals: Signal[]; risk: RiskSummary } {
+export function evaluateSignals(
+  ev: Evidence,
+  intent: IntentResult,
+  trustedPolicy?: TrustedPolicy | null,
+): { signals: Signal[]; risk: RiskSummary } {
   const unusual = evalUnusualAmount(ev);
   const amountElevated = unusual.status === 'observed' && unusual.risk >= 0.5;
   const hasInstructions = intent.detected_instructions.length > 0;
@@ -229,6 +290,10 @@ export function evaluateSignals(ev: Evidence, intent: IntentResult): { signals: 
     evalEvidenceGap(ev),
     evalUntrustedInstruction(intent),
   ];
+
+  // Appended only when a trusted policy file is supplied — keeps the default
+  // signal set (and every existing PR fingerprint) untouched.
+  if (trustedPolicy) signals.push(evalPolicyLimit(ev, trustedPolicy));
 
   return { signals, risk: aggregate(signals) };
 }

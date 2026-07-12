@@ -10,6 +10,7 @@ import type {
   IntentResult,
   Integrity,
   SupplierInvoiceEvidence,
+  TrustedPolicy,
 } from './types.js';
 import { criticalFieldDiffs, criticalStateDigest } from './critical.js';
 import { canonicalize } from './canonical.js';
@@ -17,7 +18,7 @@ import { sha256 } from 'js-sha256';
 
 // --- Prepare-phase gates ----------------------------------------------------
 
-export function prepareGates(ev: Evidence, intent: IntentResult): Gate[] {
+export function prepareGates(ev: Evidence, intent: IntentResult, trustedPolicy?: TrustedPolicy | null): Gate[] {
   const inv = ev.invoice;
   const gates: Gate[] = [];
 
@@ -86,6 +87,30 @@ export function prepareGates(ev: Evidence, intent: IntentResult): Gate[] {
       : 'No completed exact duplicate found.',
     remediation: completedDuplicate ? 'Do not pay again; investigate the prior payment.' : undefined,
   });
+
+  // Trusted-policy hard threshold — added only when an operator policy file is
+  // supplied. A same-currency amount strictly above the hard block fails the gate,
+  // which the existing decision logic turns into `blocked`. Cross-currency is not
+  // evaluated (no conversion), consistent with the IBAN "nothing to compare" rule.
+  if (trustedPolicy) {
+    const sameCurrency = inv.amount.currency === trustedPolicy.currency;
+    const amount = Number.parseFloat(inv.amount.value);
+    const hard = Number.parseFloat(trustedPolicy.hard_block_amount);
+    const breach = sameCurrency && Number.isFinite(amount) && amount > hard;
+    gates.push({
+      id: 'within_trusted_policy_hard_limit',
+      phase: 'prepare',
+      status: breach ? 'fail' : 'pass',
+      reason: breach
+        ? `blocked by policy: amount ${amount} ${inv.amount.currency} exceeds the trusted hard-block threshold ${hard} ${trustedPolicy.currency}.`
+        : sameCurrency
+          ? `Amount is within the trusted policy hard-block threshold (${hard} ${trustedPolicy.currency}).`
+          : `Trusted policy hard limit not evaluated (invoice ${inv.amount.currency} ≠ policy ${trustedPolicy.currency}; no conversion).`,
+      remediation: breach
+        ? 'This amount cannot proceed under the trusted policy; escalate outside this tool.'
+        : undefined,
+    });
+  }
 
   return gates;
 }

@@ -53,6 +53,14 @@ export function renderReport(result: PrepareResult): string {
   for (const s of b.signals) lines.push(signalLine(s));
   const rk = risk.observed_risk === null ? 'not scored' : risk.observed_risk.toFixed(3);
   lines.push(`  observed_risk=${rk}  coverage=${(risk.coverage * 100).toFixed(0)}%  band=${bandLabel(risk.band)}`);
+  if (b.trusted_policy) {
+    const tp = b.trusted_policy;
+    lines.push('');
+    lines.push('TRUSTED POLICY (operator-authored file — explicitly trusted source)');
+    lines.push(`  currency: ${tp.currency}   hard_block: ${tp.hard_block_amount}`);
+    lines.push(`  initiator role: ${tp.applied_role}   approval limit: ${tp.applied_limit ?? '(none defined)'}`);
+    lines.push(`  policy digest: ${tp.policy_digest.slice(0, 16)}…`);
+  }
   lines.push('');
   lines.push('HARD GATES (must all pass to proceed — a score cannot override these)');
   for (const g of b.gates) lines.push(gateLine(g));

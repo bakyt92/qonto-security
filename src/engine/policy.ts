@@ -2,7 +2,7 @@
 // probabilities. Everything here is versioned and digested into the PR body so a
 // reviewer can see exactly which policy produced a decision.
 
-import type { SignalId } from './types.js';
+import type { CoreSignalId } from './types.js';
 import { digest } from './canonical.js';
 
 export interface Policy {
@@ -10,7 +10,7 @@ export interface Policy {
   policy_version: string;
   /** minutes a prepared PR remains valid for Act. */
   pr_ttl_minutes: number;
-  signal_weights: Record<SignalId, number>;
+  signal_weights: Record<CoreSignalId, number>;
   /** minimum score coverage for a Green (ready_for_finance_review) decision. */
   min_coverage: number;
   /** signal risk >= this routes to manual review even if all gates pass. */
