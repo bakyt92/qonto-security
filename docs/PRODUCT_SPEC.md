@@ -13,7 +13,7 @@ Qonto MCP can give an AI agent financial read and write tools. Qonto remains the
 
 Finance PR covers that pre-Qonto gap. It binds the user's intent, Qonto evidence, proposed action, business policy, and human review to an immutable proposal.
 
-This is a **new design informed by TrustGateway's interception concept and Qonto's security boundary**. It is **MVP** and implementable within a hackathon because it limits the first release to one invoice and one controlled write type.
+This is a **new design informed by interception concept and Qonto's security boundary**. It is **MVP** and implementable within a hackathon because it limits the first release to one invoice and one controlled write type.
 
 ## 2. Target user and job
 
@@ -200,8 +200,8 @@ Weighted risk signals and hard gates are specified in `RISK_SIGNAL_MAPPING.md`. 
 | Recommendation | Label | Origin | Why needed | Hackathon fit |
 |---|---|---|---|---|
 | Immutable Finance PR + fingerprint | **REIMPLEMENT / MVP** | New design + Qonto boundary | Binds approval to action | High |
-| Deterministic checks and explicit evidence | **KEEP concept / MVP** | TrustGateway | Explainable review | High |
-| Explicit human checkpoint | **KEEP concept / MVP** | TrustGateway + Qonto | Stops autonomous writes | High |
+| Deterministic checks and explicit evidence | **KEEP concept / MVP** | Explainable review | High |
+| Explicit human checkpoint | **KEEP concept / MVP** | Qonto | Stops autonomous writes | High |
 | One-shot fresh-state Act gate | **REIMPLEMENT / MVP** | New design | Stops mutation, stale state, replay | Medium but essential |
 | Event-driven visual replay | **SIMPLIFY / MVP** | FlowTwin | Demonstrates the real process | High |
 | Second model | **ROADMAP / optional** | New design | Independent ambiguity review | Medium; feature-flag only |

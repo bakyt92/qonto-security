@@ -15,7 +15,6 @@ The flagship flow reviews one supplier invoice before one payment-request or app
 - No claim that Finance PR enforces Qonto roles, permissions, SCA, or native approval.
 - No claim that CFO, CEO, or designated approver is a native Qonto role.
 - No copying FlowTwin code until its owner supplies a code licence. Reimplement the small visual ideas.
-- No reuse of TrustGateway code until the incomplete MIT notice is resolved; its concepts and test cases may guide a clean implementation.
 
 ## Architecture
 
@@ -52,13 +51,6 @@ Use a small local persistence mechanism with atomic compare-and-set semantics (S
 Weighted signals: possible duplicate, supplier IBAN drift, unusual amount, non-mandatory evidence gap, and untrusted-instruction indicator. Display score coverage separately.
 
 Hard gates: explicit action intent, unambiguous target/action, required evidence, not already paid/matched, approved ID/fingerprint, valid hash, unexpired PR, unchanged critical Qonto state, one-shot unused state, and exact prepared-action match.
-
-## Reuse decisions
-
-- **TrustGateway KEEP as concepts/tests:** normalized `CheckResult`, deterministic rule evaluation, request/decision/audit lifecycle, duplicate and amount-anomaly cases, timeout/failure tests.
-- **TrustGateway REIMPLEMENT:** all Finance PR models, scoring, policy gates, integrity, replay protection, Qonto mapping, and redaction.
-- **FlowTwin KEEP as design patterns:** pure `worldAt(time, events)` reducer, event tracks, play/pause/reset/speed/scrub controls, dwell calculation, stable movement, guided scenario beats, and end summary.
-- **FlowTwin DROP:** hospital geometry, floors, patient sheets, medical data, forecasts, Gemini/NVIDIA integrations, and hospital-specific reporting.
 
 ## Implementation priority
 

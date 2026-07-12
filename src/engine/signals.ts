@@ -1,10 +1,5 @@
 // The five MVP weighted signals + observed-only aggregate and separate coverage.
 //
-// Rules (reimplemented cleanly from TrustGateway concepts, none copied):
-//  - one signal per risk cause (no double counting);
-//  - `insufficient_data` is a first-class status (TrustGateway lacked it) and is
-//    excluded from the risk numerator but LOWERS coverage;
-//  - a low score with low coverage must never read as confidence.
 
 import type { CoreSignalId, Evidence, IntentResult, RiskSummary, Signal, SignalId, TrustedPolicy } from './types.js';
 import { POLICY } from './policy.js';

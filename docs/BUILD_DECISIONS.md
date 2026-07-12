@@ -84,18 +84,9 @@ documented but never called. We do not invent an endpoint or fake a result.
 
 - Real Qonto write execution (documented seam only).
 - Networked OpenAI reviewer (offline heuristic stub instead).
-- Extra TrustGateway signals (vendor reputation, budget, timing, geo, actor) —
+- Extra signals (vendor reputation, budget, timing, geo, actor) —
   correlated / not Qonto-sourced / bias risk.
 - Multi-invoice queue simulation and analytics.
-
-## Reuse posture (see ATTRIBUTION.md)
-
-- **TrustGateway**: concepts + test cases only (normalized CheckResult,
-  deterministic duplicate/amount rules, decision/audit lifecycle). No source
-  copied — its MIT notice is incomplete.
-- **FlowTwin**: interaction/polish patterns only (pure `worldAt(t, events)`
-  reducer, event tracks, play/pause/reset/speed/scrub, dwell, guided beats, end
-  summary). No code, CSS, SVG, assets, data, or hospital theme copied.
 
 ## Three invariants — how we hold them
 

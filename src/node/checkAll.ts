@@ -7,6 +7,7 @@ import {
   prepare,
   parseTrustedPolicyText,
   systemClock,
+  POLICY,
   type Evidence,
   type UserRequest,
   type TrustedPolicy,
@@ -46,7 +47,7 @@ invoices.forEach((inv, i) => {
   store.putLifecycle(r.stored.body.pr_id, r.decision === 'blocked' ? 'blocked' : 'prepared');
 
   const failedGates = r.gates.filter((g) => g.status !== 'pass');
-  const matSignals = r.signals.filter((s) => s.status === 'flagged' || s.risk >= 1);
+  const matSignals = r.signals.filter((s) => s.status === 'observed' && s.risk >= POLICY.material_signal_risk);
   const amt = `${evidence.invoice.amount.value} ${evidence.invoice.amount.currency}`;
   rows.push(
     `${prId} ${r.stored.integrity.fingerprint}  ${r.decision.toUpperCase().padEnd(24)} ${evidence.invoice.supplier_name.slice(0, 26).padEnd(27)} ${amt.padStart(16)}  cov=${Math.round((r.risk.coverage ?? 0) * 100)}% band=${(r.risk as any).band}`,

@@ -121,8 +121,7 @@ When a trusted policy file is supplied, a **sixth** signal is added:
 6. `policy_amount_over_limit` (0.3)
 
 These are transparent policy heuristics, **not** calibrated fraud probabilities,
-and there is one canonical signal registry — not the older TrustGateway
-13-signal dashboard model.
+and there is one canonical signal registry
 
 **Coverage** is the proportion of *applicable* signal weight that could actually
 be evaluated from the available evidence. The semantics matter:
@@ -388,9 +387,6 @@ See `docs/ARCHITECTURE.md`, `docs/BUILD_DECISIONS.md`, and
 - `SECURITY.md` — threat-model summary, redaction, and what “Green” does and does
   not mean.
 - `docs/KNOWN_LIMITATIONS.md` — honest scope.
-- `ATTRIBUTION.md` — TrustGateway (concepts and test ideas only) and FlowTwin
-  (interaction patterns only) were **inspected, not copied**; neither ships a
-  complete licence, so this is a clean-room reimplementation.
 
 **Green** means only *“no material risk observed in the available evidence; ready
 for Finance review.”* It never means safe, paid, approved, or executed.

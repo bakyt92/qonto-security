@@ -1,6 +1,5 @@
 // Finance PR — domain types.
 // One canonical vocabulary shared by engine, CLI, tests, and the visual reducer.
-// (TrustGateway's core failure was three divergent signal vocabularies; we keep one.)
 
 export type DataMode = 'synthetic' | 'qonto_sandbox';
 

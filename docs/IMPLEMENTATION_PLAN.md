@@ -69,7 +69,7 @@ Exit criteria:
 ## 4. Phase 1 — Freeze contracts and policy
 
 **Label: REIMPLEMENT / MVP.**  
-**Origin:** new Finance PR design, TrustGateway result concepts.
+**Origin:** new Finance PR design.
 
 Tasks:
 
@@ -89,8 +89,7 @@ Exit criteria:
 
 ## 5. Phase 2 — Deterministic Finance PR core
 
-**Label: REIMPLEMENT / MVP.**  
-**Origin:** TrustGateway concepts plus new integrity design.
+**Label: MVP.**  
 
 Implementation order:
 
@@ -105,7 +104,7 @@ Implementation order:
 9. SQLite immutable store and append-only events.
 10. CLI commands for synthetic `observe`, `prepare`, `show`, `approve`, and dry-run `act`.
 
-Port concepts, not source code, from TrustGateway. Do not implement vendor reputation, budgets, timing/geo, dashboards, PostgreSQL, or WebSockets.
+Port concepts, not source code. Do not implement vendor reputation, budgets, timing/geo, dashboards, PostgreSQL, or WebSockets.
 
 Exit criteria:
 

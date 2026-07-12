@@ -4,7 +4,7 @@
 
 Build a local, auditable Finance PR engine with a Claude Skill as the Qonto MCP orchestrator and a separate event-driven visual demo. Qonto MCP remains the only Qonto integration surface. The MVP does not introduce another remote MCP server, multi-tenant backend, or production database.
 
-This is a **REIMPLEMENT / MVP** design. It keeps TrustGateway's interception, check-result, escalation, and audit concepts while removing its FastAPI/PostgreSQL/multi-tenant stack. It keeps FlowTwin's deterministic replay model while removing the hospital-specific world.
+This is a **REIMPLEMENT / MVP** design. It keeps interception, check-result, escalation, and audit concepts while removing its FastAPI/PostgreSQL/multi-tenant stack. It keeps FlowTwin's deterministic replay model while removing the hospital-specific world.
 
 ## 2. System boundary
 
@@ -71,7 +71,7 @@ Each record contains `source`, `source_object_id`, `observed_at`, `data_mode`, a
 
 ### 3.3 Finance PR core
 
-**MVP / reimplementation informed by TrustGateway.** Pure deterministic functions where possible:
+**MVP.** Pure deterministic functions where possible:
 
 - validate schemas;
 - evaluate hard gates;

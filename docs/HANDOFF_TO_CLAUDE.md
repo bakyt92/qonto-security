@@ -72,7 +72,7 @@ Use synthetic mode by default. The complete product—including tests and visual
 
 ## 4. Mandatory engine behavior
 
-Implement a small deterministic Finance PR engine, not a copy of TrustGateway.
+Implement a small deterministic Finance PR engine.
 
 Required weighted signals:
 
@@ -184,7 +184,6 @@ Qonto remains responsible for permissions, native approval, SCA, and execution.
 
 ## 10. Reuse and licensing rules
 
-- TrustGateway: use concepts and recreate relevant tests. Its README says MIT but no full licence file is present. Do not copy source until the owner adds a complete licence/notice.
 - FlowTwin: no code licence is present. Cleanly reimplement generic patterns and credit inspiration.
 - Create `ATTRIBUTION.md` and a dependency licence report.
 - Do not reuse the hospital datasets or present any source project's synthetic data as Qonto data.

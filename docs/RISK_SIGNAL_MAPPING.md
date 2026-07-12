@@ -1,10 +1,9 @@
 # Risk signal mapping
 
 ## 1. Finding: “13 signals” is a mock dashboard schema
+s exact 13 signal names and weights are declared in:
 
-TrustGateway's exact 13 signal names and weights are declared in:
-
-- `/home/victor/_aprojects/qonto/TrustGateway/frontend/dashboard/src/types/dashboard.ts:14-42`
+- `/home/victor/_aprojects/qontofrontend/dashboard/src/types/dashboard.ts:14-42`
 - weights at `types/dashboard.ts:147-162`
 - synthetic value generation at `frontend/dashboard/src/lib/mockData.ts:78-102`
 
@@ -100,10 +99,10 @@ Weights are policy defaults, not learned probabilities. They sum to 1.00 among c
 
 | Signal | Default weight | Statuses | Risk calculation | Why | Origin |
 |---|---:|---|---|---|---|
-| `possible_duplicate` | 0.30 | observed / insufficient_data / not_applicable | 1.0 same supplier+invoice number not confirmed paid; 0.7 same supplier+amount+currency+near date; 0.4 fuzzy candidate; 0 no candidate | Duplicate payment is the clearest invoice risk | TrustGateway, simplified |
+| `possible_duplicate` | 0.30 | observed / insufficient_data / not_applicable | 1.0 same supplier+invoice number not confirmed paid; 0.7 same supplier+amount+currency+near date; 0.4 fuzzy candidate; 0 no candidate | Duplicate payment is the clearest invoice risk | simplified |
 | `supplier_iban_drift` | 0.30 | observed / insufficient_data / not_applicable | 1.0 known supplier with new IBAN and corroborating conflict; 0.7 known supplier with changed IBAN; 0.4 new supplier/no known IBAN; 0 same normalized IBAN | Common high-impact review point | New Qonto design |
-| `unusual_amount` | 0.20 | observed / insufficient_data | Documented robust rule: compare supplier history median/range; 1.0 extreme, 0.5 elevated, 0 normal. Exact thresholds live in policy | Explains amount deviation without fake certainty | TrustGateway, simplified |
-| `evidence_gap_risk` | 0.10 | observed / not_applicable | Only optional evidence gaps: 0–1 by typed severity. Required evidence failures are gates | Shows review friction without overriding requirements | New design + TrustGateway policy idea |
+| `unusual_amount` | 0.20 | observed / insufficient_data | Documented robust rule: compare supplier history median/range; 1.0 extreme, 0.5 elevated, 0 normal. Exact thresholds live in policy | Explains amount deviation without fake certainty | simplified |
+| `evidence_gap_risk` | 0.10 | observed / not_applicable | Only optional evidence gaps: 0–1 by typed severity. Required evidence failures are gates | Shows review friction without overriding requirements | New design policy idea |
 | `untrusted_instruction_indicator` | 0.10 | observed / not_run | 1.0 explicit tool/approval instruction in document; 0.5 instruction-like text; 0 none observed. Detection is advisory | Highlights document manipulation without claiming perfect detection | New threat design |
 
 ### Aggregate
