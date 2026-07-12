@@ -262,10 +262,10 @@ gates are. The injected line simply confirms the rule:
 - a **reused** PR → `replay_blocked` (atomic one-shot reservation).
 
 <p>
-<img src="docs/screenshots/03-changed-iban.png" width="49%" alt="Changed IBAN manual review"/>
+<img src="docs/screenshots/03-changed-iban.png" width="100%" alt="Changed IBAN manual review"/>
 </p>
 <p>
-<img src="docs/screenshots/04-document-injection.png" width="49%" alt="Document injection blocked"/>
+<img src="docs/screenshots/04-document-injection.png" width="100%" alt="Document injection blocked"/>
 </p>
 
 
