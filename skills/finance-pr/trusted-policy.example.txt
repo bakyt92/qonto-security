@@ -12,7 +12,7 @@
 #                   an amount above it raises a "policy breach" review signal
 
 currency   = EUR
-hard_block = 50000
+hard_block = 5
 
 role.owner      = 10000
 role.admin      = 10000
