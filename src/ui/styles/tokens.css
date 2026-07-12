@@ -1,0 +1,29 @@
+* { color-scheme: dark; }
+:root {
+  --bg-0: #0a0e17;
+  --bg-1: #0f1420;
+  --bg-2: #151b2b;
+  --bg-3: #1a2136;
+  --line: #26314a;
+  --ink-0: #f5f7fb;
+  --ink-1: #d4d9e6;
+  --ink-2: #8b93ac;
+  --ink-3: #5a626e;
+  --before: #2bd4c4;
+  --before-glow: #43e1d0;
+  --qonto: #b18bff;
+  --qonto-glow: #c9a8ff;
+  --ok: #2bd4c4;
+  --review: #f2b53c;
+  --block: #ff5d73;
+  --accent: #6ea8fe;
+  --dur-fast: 160ms;
+  --dur-med: 300ms;
+  --dur-token: 620ms;
+  --dur-slow: 900ms;
+  --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+}
+body { margin: 0; font: 13px system-ui; background: var(--bg-0); color: var(--ink-1); }
