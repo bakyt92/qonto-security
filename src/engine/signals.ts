@@ -1,165 +1,234 @@
+// The five MVP weighted signals + observed-only aggregate and separate coverage.
+//
+// Rules (reimplemented cleanly from TrustGateway concepts, none copied):
+//  - one signal per risk cause (no double counting);
+//  - `insufficient_data` is a first-class status (TrustGateway lacked it) and is
+//    excluded from the risk numerator but LOWERS coverage;
+//  - a low score with low coverage must never read as confidence.
+
+import type { Evidence, IntentResult, RiskSummary, Signal, SignalId } from './types.js';
 import { POLICY } from './policy.js';
-import type { Evidence, IntentResult, RiskBand, RiskSummary, Signal } from './types.js';
+import { normalizeIban } from './redact.js';
 
-function evalPossibleDuplicate(evidence: Evidence, _intent: IntentResult): Signal {
-  const { invoice, supplier_history: history } = evidence;
-  let risk = 0;
-  let status: 'observed' | 'not_applicable' = 'observed';
+const MIN_HISTORY_FOR_AMOUNT = 4;
+const NEAR_DAYS = 7;
 
-  const exact = history.find((h) => h.invoice_number === invoice.invoice_number);
-  if (exact) risk = 1.0;
-  else {
-    const same_amount_date = history.find(
-      (h) =>
-        h.amount.value === invoice.amount.value &&
-        h.amount.currency === invoice.amount.currency &&
-        h.issue_date &&
-        invoice.issue_date &&
-        Math.abs(new Date(h.issue_date).getTime() - new Date(invoice.issue_date).getTime()) < 86400000,
-    );
-    if (same_amount_date) risk = 0.7;
-    else {
-      const fuzzy = history.find(
-        (h) => Math.abs(parseFloat(h.amount.value) - parseFloat(invoice.amount.value)) < 10,
-      );
-      if (fuzzy) risk = 0.4;
-    }
-  }
-
-  return {
-    id: 'possible_duplicate',
-    status,
-    risk,
-    weight: POLICY.signal_weights.possible_duplicate,
-    reason: risk > 0 ? `Possible duplicate with risk ${risk.toFixed(2)}` : 'No duplicate candidate found in supplier history.',
-    evidence_refs: ['supplier_history'],
-  };
+function amountNumber(value: string): number {
+  return Number.parseFloat(value);
 }
 
-function evalSupplierIbanDrift(evidence: Evidence, _intent: IntentResult): Signal {
-  const { invoice, known_supplier_ibans } = evidence;
-  let risk = 0;
-  let status: 'observed' | 'not_applicable' = 'observed';
-
-  if (!invoice.iban) {
-    status = 'not_applicable';
-  } else if (known_supplier_ibans.length === 0) {
-    risk = 0.4;
-  } else if (known_supplier_ibans.includes(invoice.iban)) {
-    risk = 0.0;
-  } else {
-    risk = 0.7;
-  }
-
-  return {
-    id: 'supplier_iban_drift',
-    status,
-    risk,
-    weight: POLICY.signal_weights.supplier_iban_drift,
-    reason:
-      status === 'not_applicable'
-        ? 'Invoice IBAN matches a previously used IBAN for this supplier.'
-        : status === 'observed' && risk === 0.4
-          ? 'New supplier/no known IBAN history.'
-          : risk > 0
-            ? 'Supplier IBAN differs from history AND a corroborating anomaly (elevated amount / document instruction) is present.'
-            : 'No IBAN drift observed.',
-    evidence_refs: ['invoice.iban', 'supplier_history'],
-  };
+function median(nums: number[]): number {
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-function evalUnusualAmount(evidence: Evidence, _intent: IntentResult): Signal {
-  const { invoice, supplier_history: history } = evidence;
-  if (history.length < 4) {
+function daysBetween(a: string | null, b: string | null): number {
+  if (!a || !b) return Number.POSITIVE_INFINITY;
+  return Math.abs(Date.parse(a) - Date.parse(b)) / 86_400_000;
+}
+
+function w(id: SignalId): number {
+  return POLICY.signal_weights[id];
+}
+
+// --- individual signals -----------------------------------------------------
+
+function evalUnusualAmount(ev: Evidence): Signal {
+  const id: SignalId = 'unusual_amount';
+  const amounts = ev.supplier_history
+    .filter((h) => h.amount.currency === ev.invoice.amount.currency)
+    .map((h) => amountNumber(h.amount.value))
+    .filter((n) => Number.isFinite(n) && n > 0);
+
+  if (amounts.length < MIN_HISTORY_FOR_AMOUNT) {
     return {
-      id: 'unusual_amount',
+      id,
       status: 'insufficient_data',
       risk: 0,
-      weight: POLICY.signal_weights.unusual_amount,
-      reason: `Only ${history.length} prior amount(s) for this supplier (need 4); baseline unknown.`,
+      weight: w(id),
+      reason: `Only ${amounts.length} prior amount(s) for this supplier (need ${MIN_HISTORY_FOR_AMOUNT}); baseline unknown.`,
       evidence_refs: ['supplier_history'],
     };
   }
 
-  const amounts = history.map((h) => parseFloat(h.amount.value));
-  const median = amounts.sort((a, b) => a - b)[Math.floor(amounts.length / 2)];
-  const current = parseFloat(invoice.amount.value);
-  const z = Math.abs((current - median) / (median || 1));
-
+  const amount = amountNumber(ev.invoice.amount.value);
+  const med = median(amounts);
+  const ratio = med > 0 ? amount / med : Number.POSITIVE_INFINITY;
   let risk = 0;
-  if (z <= 2) risk = 0;
-  else if (z <= 3) risk = 0.5;
-  else risk = 1.0;
-
-  return {
-    id: 'unusual_amount',
-    status: 'observed',
-    risk,
-    weight: POLICY.signal_weights.unusual_amount,
-    reason: `Z-score ${z.toFixed(1)} (median ${median.toFixed(2)}, current ${current.toFixed(2)})`,
-    evidence_refs: ['invoice.amount', 'supplier_history'],
-  };
+  let reason = `Amount ${amount} is near the supplier median (${med}).`;
+  if (ratio >= 3 || ratio <= 1 / 3) {
+    risk = 1;
+    reason = `Amount ${amount} is ${ratio.toFixed(1)}× the supplier median (${med}) — extreme deviation.`;
+  } else if (ratio >= 1.75) {
+    risk = 0.5;
+    reason = `Amount ${amount} is ${ratio.toFixed(1)}× the supplier median (${med}) — elevated.`;
+  }
+  return { id, status: 'observed', risk, weight: w(id), reason, evidence_refs: ['supplier_history'] };
 }
 
-function evalEvidenceGap(evidence: Evidence, _intent: IntentResult): Signal {
-  let gap = 0;
-  if (!evidence.invoice.attachment_text) gap += 0.3;
-  if (!evidence.invoice.matched_transaction_ids.length) gap += 0.38;
+function evalPossibleDuplicate(ev: Evidence): Signal {
+  const id: SignalId = 'possible_duplicate';
+  const inv = ev.invoice;
 
-  return {
-    id: 'evidence_gap_risk',
-    status: 'observed',
-    risk: Math.min(gap, 1),
-    weight: POLICY.signal_weights.evidence_gap_risk,
-    reason: `Optional evidence gaps: ${evidence.unavailable_fields.join(', ')}`,
-    evidence_refs: evidence.unavailable_fields,
-  };
-}
-
-function evalUntrustedInstruction(_evidence: Evidence, intent: IntentResult): Signal {
-  const detected = intent.detected_instructions;
-  let risk = 0;
-  if (detected.length > 0) {
-    const hasExplicit = detected.some((d) => /approve|pay|execute|ignore/i.test(d));
-    risk = hasExplicit ? 1.0 : 0.5;
+  if (inv.has_duplicates) {
+    return {
+      id,
+      status: 'observed',
+      risk: 1,
+      weight: w(id),
+      reason: 'Qonto flagged this invoice as having duplicates.',
+      evidence_refs: ['invoice.has_duplicates'],
+    };
   }
 
+  const amount = inv.amount.value;
+  const cur = inv.amount.currency;
+  let risk = 0;
+  let reason = 'No duplicate candidate found in supplier history.';
+
+  for (const h of ev.supplier_history) {
+    if (h.invoice_number && h.invoice_number === inv.invoice_number && h.status !== 'paid') {
+      risk = Math.max(risk, 1);
+      reason = `Same supplier + invoice number "${inv.invoice_number}" already on file (not confirmed paid).`;
+      continue;
+    }
+    if (h.amount.value === amount && h.amount.currency === cur && daysBetween(h.issue_date, inv.issue_date) <= NEAR_DAYS) {
+      risk = Math.max(risk, 0.7);
+      if (risk === 0.7) reason = `Same amount ${amount} ${cur} within ${NEAR_DAYS} days of a prior invoice.`;
+    } else if (h.amount.value === amount && h.amount.currency === cur) {
+      risk = Math.max(risk, 0.4);
+      if (risk === 0.4) reason = `Same amount ${amount} ${cur} as a prior invoice (different date) — weak candidate.`;
+    }
+  }
+
+  return { id, status: 'observed', risk, weight: w(id), reason, evidence_refs: ['supplier_history', 'invoice.has_duplicates'] };
+}
+
+function evalIbanDrift(ev: Evidence, amountElevated: boolean, hasInstructions: boolean): Signal {
+  const id: SignalId = 'supplier_iban_drift';
+  const invIban = normalizeIban(ev.invoice.iban);
+  const known = ev.known_supplier_ibans.map((i) => normalizeIban(i)).filter(Boolean) as string[];
+
+  if (!invIban) {
+    return {
+      id,
+      status: 'not_applicable',
+      risk: 0,
+      weight: w(id),
+      reason: 'Invoice carries no IBAN (nothing to compare); payability blocked upstream.',
+      evidence_refs: ['invoice.iban'],
+    };
+  }
+
+  if (known.length === 0) {
+    return {
+      id,
+      status: 'observed',
+      risk: 0.4,
+      weight: w(id),
+      reason: 'No known IBAN on file for this supplier — a new payee cannot be verified against history.',
+      evidence_refs: ['known_supplier_ibans'],
+    };
+  }
+
+  if (known.includes(invIban)) {
+    return {
+      id,
+      status: 'observed',
+      risk: 0,
+      weight: w(id),
+      reason: 'Invoice IBAN matches a previously used IBAN for this supplier.',
+      evidence_refs: ['known_supplier_ibans'],
+    };
+  }
+
+  // Known supplier, changed IBAN.
+  const corroborated = amountElevated || hasInstructions;
   return {
-    id: 'untrusted_instruction_indicator',
+    id,
     status: 'observed',
-    risk,
-    weight: POLICY.signal_weights.untrusted_instruction_indicator,
-    reason:
-      detected.length > 0
-        ? `Detected ${detected.length} instruction phrase(s): ${detected.slice(0, 3).join('; ')}`
-        : 'No instruction-like text detected in document content.',
-    evidence_refs: ['attachment_text', 'intent.detected_instructions'],
+    risk: corroborated ? 1 : 0.7,
+    weight: w(id),
+    reason: corroborated
+      ? 'Supplier IBAN differs from history AND a corroborating anomaly (elevated amount / document instruction) is present.'
+      : 'Supplier IBAN differs from every IBAN previously used for this supplier.',
+    evidence_refs: ['known_supplier_ibans', 'invoice.iban'],
   };
 }
 
-export function evaluateSignals(evidence: Evidence, intent: IntentResult): { signals: Signal[]; risk: RiskSummary } {
-  const signals = [
-    evalPossibleDuplicate(evidence, intent),
-    evalSupplierIbanDrift(evidence, intent),
-    evalUnusualAmount(evidence, intent),
-    evalEvidenceGap(evidence, intent),
-    evalUntrustedInstruction(evidence, intent),
-  ];
+function evalEvidenceGap(ev: Evidence): Signal {
+  const id: SignalId = 'evidence_gap_risk';
+  const gaps: string[] = [];
+  if (!ev.invoice.attachment_text) gaps.push('no extracted document text');
+  if (!ev.invoice.issue_date) gaps.push('missing issue date');
+  if (!ev.invoice.due_date) gaps.push('missing due date');
+  if (ev.invoice.matched_transaction_ids.length === 0) gaps.push('no matched transaction');
+  const risk = Math.min(1, gaps.length * 0.34);
+  return {
+    id,
+    status: 'observed',
+    risk,
+    weight: w(id),
+    reason: gaps.length ? `Optional evidence gaps: ${gaps.join(', ')}.` : 'No optional evidence gaps.',
+    evidence_refs: ['invoice'],
+  };
+}
 
-  // Aggregate
+function evalUntrustedInstruction(intent: IntentResult): Signal {
+  const id: SignalId = 'untrusted_instruction_indicator';
+  const hits = intent.detected_instructions;
+  const strong = hits.some((h) => /approve|pay|authori|ignore|bypass|transfer|release|execute/i.test(h));
+  const risk = hits.length === 0 ? 0 : strong ? 1 : 0.5;
+  return {
+    id,
+    status: 'observed',
+    risk,
+    weight: w(id),
+    reason: hits.length
+      ? `Instruction-like text found in untrusted document content: ${hits.map((h) => `“${h}”`).join('; ')}.`
+      : 'No instruction-like text detected in document content.',
+    evidence_refs: ['invoice.attachment_text'],
+  };
+}
+
+// --- aggregate --------------------------------------------------------------
+
+export function aggregate(signals: Signal[]): RiskSummary {
+  const applicable = signals.filter((s) => s.status !== 'not_applicable' && s.status !== 'not_run');
   const observed = signals.filter((s) => s.status === 'observed');
-  const total_weight = observed.reduce((sum, s) => sum + s.weight, 0);
-  const observed_risk =
-    total_weight > 0 ? observed.reduce((sum, s) => sum + s.risk * s.weight, 0) / total_weight : null;
-  const applicable_weight = signals.reduce((sum, s) => sum + (s.status !== 'not_run' ? s.weight : 0), 0);
-  const coverage = applicable_weight > 0 ? total_weight / applicable_weight : 0;
 
-  let band: RiskBand;
-  if (coverage === 0) band = 'not_scored';
-  else if (observed_risk === null) band = 'not_scored';
-  else if (observed_risk < POLICY.bands.low) band = 'low_observed_risk';
-  else if (observed_risk >= POLICY.bands.high) band = 'high_observed_risk';
+  const configuredWeight = applicable.reduce((sum, s) => sum + s.weight, 0);
+  const observedWeight = observed.reduce((sum, s) => sum + s.weight, 0);
+
+  const coverage = configuredWeight > 0 ? observedWeight / configuredWeight : 0;
+
+  if (observedWeight === 0) {
+    return { observed_risk: null, coverage, band: 'not_scored' };
+  }
+
+  const observed_risk = observed.reduce((sum, s) => sum + s.risk * s.weight, 0) / observedWeight;
+
+  let band: RiskSummary['band'];
+  if (observed_risk < POLICY.bands.low_below) band = 'low_observed_risk';
+  else if (observed_risk >= POLICY.bands.high_at_or_above) band = 'high_observed_risk';
   else band = 'elevated_observed_risk';
 
-  return { signals, risk: { observed_risk, coverage, band } };
+  return { observed_risk, coverage, band };
+}
+
+export function evaluateSignals(ev: Evidence, intent: IntentResult): { signals: Signal[]; risk: RiskSummary } {
+  const unusual = evalUnusualAmount(ev);
+  const amountElevated = unusual.status === 'observed' && unusual.risk >= 0.5;
+  const hasInstructions = intent.detected_instructions.length > 0;
+
+  const signals: Signal[] = [
+    evalPossibleDuplicate(ev),
+    evalIbanDrift(ev, amountElevated, hasInstructions),
+    unusual,
+    evalEvidenceGap(ev),
+    evalUntrustedInstruction(intent),
+  ];
+
+  return { signals, risk: aggregate(signals) };
 }

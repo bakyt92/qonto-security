@@ -1,193 +1,214 @@
-import type { Evidence, Gate, IntentResult } from './types.js';
+// Hard gates. Gates answer "can this proceed at all?" and are strictly separate
+// from weighted risk. A risk score can NEVER turn a failed gate into a pass, and
+// integrity/replay/state gates are never score inputs.
 
-export function prepareGates(evidence: Evidence, intent: IntentResult): Gate[] {
-  return [
-    {
-      id: 'explicit_action_intent',
-      phase: 'prepare',
-      status: intent.intent_class === 'ACT' ? 'pass' : intent.intent_class === 'ADVICE_ONLY' ? 'fail' : 'unknown',
-      reason:
-        intent.intent_class === 'ACT'
-          ? 'User explicitly requested an action.'
-          : intent.intent_class === 'ADVICE_ONLY'
-            ? 'User asked for advice, not an action. Questions cannot authorize payments.'
-            : 'Intent class is ambiguous or unclear.',
-      remediation: intent.intent_class === 'ADVICE_ONLY' ? 'If you want to pay this, say so explicitly.' : undefined,
-    },
-    {
-      id: 'intent_source_is_authoritative',
-      phase: 'prepare',
-      status: intent.source_is_authoritative ? 'pass' : 'fail',
-      reason: intent.source_is_authoritative
-        ? 'User explicitly authorized the action via chat.'
-        : 'Document or tool text cannot authorize. Only explicit user language can.',
-      remediation: !intent.source_is_authoritative
-        ? 'Require explicit user chat approval; document text is data, not authority.'
-        : undefined,
-    },
-    {
-      id: 'target_and_action_unambiguous',
-      phase: 'prepare',
-      status: intent.target_and_action_unambiguous ? 'pass' : 'fail',
-      reason: intent.target_and_action_unambiguous
-        ? 'Target invoice and action are clear.'
-        : `Ambiguity detected: ${intent.ambiguity_notes}`,
-      remediation: !intent.target_and_action_unambiguous
-        ? 'Clarify which invoice to pay and what action to take; then prepare a new PR.'
-        : undefined,
-    },
-    {
-      id: 'required_evidence_present',
-      phase: 'prepare',
-      status:
-        evidence.invoice.amount && evidence.invoice.supplier_name && evidence.organization.id && evidence.membership.id
-          ? 'pass'
-          : 'fail',
-      reason:
-        evidence.invoice.amount && evidence.invoice.supplier_name && evidence.organization.id && evidence.membership.id
-          ? 'Required evidence fields are present.'
-          : 'Missing required fields (amount, supplier, org, membership).',
-      remediation: !(
-        evidence.invoice.amount &&
-        evidence.invoice.supplier_name &&
-        evidence.organization.id &&
-        evidence.membership.id
-      )
-        ? 'Fetch missing Qonto objects before preparing.'
-        : undefined,
-    },
-    {
-      id: 'not_already_paid_or_matched',
-      phase: 'prepare',
-      status: evidence.invoice.status !== 'paid' && !evidence.invoice.matched_transaction_ids.length ? 'pass' : 'fail',
-      reason:
-        evidence.invoice.status === 'paid'
-          ? 'Invoice is already marked paid.'
-          : evidence.invoice.matched_transaction_ids.length
-            ? 'Invoice is already matched to a transaction.'
-            : 'Invoice is eligible for payment review.',
-      remediation:
-        evidence.invoice.status === 'paid' || evidence.invoice.matched_transaction_ids.length
-          ? 'This invoice has already been paid or matched. No new PR required.'
-          : undefined,
-    },
-    {
-      id: 'exact_duplicate_not_completed',
-      phase: 'prepare',
-      status: evidence.invoice.has_duplicates ? 'fail' : 'pass',
-      reason: evidence.invoice.has_duplicates
-        ? 'Qonto reports this invoice has a completed exact duplicate.'
-        : 'No completed exact duplicate found.',
-      remediation: evidence.invoice.has_duplicates
-        ? 'Verify: is this a true re-payment? If not, do not create a new PR.'
-        : undefined,
-    },
-  ];
-}
+import type {
+  Approval,
+  Evidence,
+  FinancePrBody,
+  Gate,
+  IntentResult,
+  Integrity,
+  SupplierInvoiceEvidence,
+} from './types.js';
+import { criticalFieldDiffs, criticalStateDigest } from './critical.js';
+import { canonicalize } from './canonical.js';
+import { sha256 } from 'js-sha256';
 
-export function actGates(input: {
-  stored_pr_body: any;
-  computed_hash: string;
-  approval: any;
-  fresh_invoice: any;
-  current_clock: string;
-  writesEnabled: boolean;
-}): Gate[] {
+// --- Prepare-phase gates ----------------------------------------------------
+
+export function prepareGates(ev: Evidence, intent: IntentResult): Gate[] {
+  const inv = ev.invoice;
   const gates: Gate[] = [];
 
-  // Integrity gates
+  const isAction = intent.intent_class === 'PREPARE' || intent.intent_class === 'ACT';
   gates.push({
-    id: 'full_hash_matches',
-    phase: 'act',
-    status: input.computed_hash === input.stored_pr_body?.integrity?.hash ? 'pass' : 'fail',
-    reason:
-      input.computed_hash === input.stored_pr_body?.integrity?.hash
-        ? 'SHA-256 hash matches stored PR.'
-        : 'Hash mismatch — PR may be tampered.',
+    id: 'explicit_action_intent',
+    phase: 'both',
+    status: isAction ? 'pass' : 'fail',
+    reason: isAction
+      ? `Request is ${intent.intent_class} — an explicit instruction to act.`
+      : `Request is ${intent.intent_class}. A question, observation, or ambiguous phrase is not an instruction to act.`,
+    remediation: isAction ? undefined : 'Ask explicitly, e.g. "Prepare invoice <id> for payment review."',
   });
 
   gates.push({
+    id: 'intent_source_is_authoritative',
+    phase: 'both',
+    status: intent.source_is_authoritative ? 'pass' : 'fail',
+    reason: intent.source_is_authoritative
+      ? 'Action intent came from the authoritative user chat.'
+      : 'The only action-like text originates from untrusted document/tool content — not authority.',
+    remediation: intent.source_is_authoritative ? undefined : 'A human must issue the instruction directly.',
+  });
+
+  gates.push({
+    id: 'target_and_action_unambiguous',
+    phase: 'both',
+    status: intent.target_and_action_unambiguous ? 'pass' : 'fail',
+    reason: intent.target_and_action_unambiguous
+      ? 'A single target invoice and action were identified.'
+      : 'Target/action is ambiguous.',
+    remediation: intent.target_and_action_unambiguous ? undefined : 'Name the exact invoice and action.',
+  });
+
+  const coreEvidence = Boolean(inv.amount.value && inv.amount.currency && inv.supplier_name);
+  gates.push({
+    id: 'required_evidence_present',
+    phase: 'both',
+    status: coreEvidence ? 'pass' : 'fail',
+    reason: coreEvidence
+      ? 'Required structured evidence (amount, currency, supplier) is present.'
+      : 'Required structured evidence is missing.',
+    remediation: coreEvidence ? undefined : 'Re-observe the invoice; required fields must be available.',
+  });
+
+  const paidOrMatched = inv.status === 'paid' || inv.matched_transaction_ids.length > 0;
+  gates.push({
+    id: 'not_already_paid_or_matched',
+    phase: 'both',
+    status: paidOrMatched ? 'fail' : 'pass',
+    reason: paidOrMatched
+      ? `Invoice is already ${inv.status === 'paid' ? 'paid' : 'matched to a transaction'}.`
+      : 'Invoice is not already paid or matched.',
+    remediation: paidOrMatched ? 'No further payment action is appropriate.' : undefined,
+  });
+
+  const completedDuplicate = ev.supplier_history.some(
+    (h) => h.invoice_number === inv.invoice_number && h.status === 'paid',
+  );
+  gates.push({
+    id: 'exact_duplicate_not_completed',
+    phase: 'both',
+    status: completedDuplicate ? 'fail' : 'pass',
+    reason: completedDuplicate
+      ? `An invoice with number "${inv.invoice_number}" is already paid — exact completed duplicate.`
+      : 'No completed exact duplicate found.',
+    remediation: completedDuplicate ? 'Do not pay again; investigate the prior payment.' : undefined,
+  });
+
+  return gates;
+}
+
+// --- Act-phase gates --------------------------------------------------------
+
+export interface ActGateInput {
+  body: FinancePrBody;
+  integrity: Integrity;
+  approval: Approval | null;
+  freshInvoice: SupplierInvoiceEvidence;
+  nowIso: string;
+  reservationAvailable: boolean;
+  writesEnabled: boolean;
+}
+
+export function actGates(input: ActGateInput): Gate[] {
+  const { body, integrity, approval, freshInvoice, nowIso, reservationAvailable, writesEnabled } = input;
+  const gates: Gate[] = [];
+
+  // Recompute the hash of the stored body — detects any tamper with stored JSON.
+  const recomputedHash = sha256(canonicalize(body));
+  const hashOk = recomputedHash === integrity.hash;
+  gates.push({
+    id: 'full_hash_matches',
+    phase: 'act',
+    status: hashOk ? 'pass' : 'fail',
+    reason: hashOk ? 'Stored PR body hashes to the recorded value.' : 'Stored PR body no longer matches its recorded hash — tampered.',
+    remediation: hashOk ? undefined : 'Reject and re-prepare a fresh Finance PR.',
+  });
+
+  const idFpMatch = Boolean(
+    approval && approval.pr_id === body.pr_id && approval.fingerprint === integrity.fingerprint,
+  );
+  gates.push({
     id: 'finance_pr_id_and_fingerprint_match',
     phase: 'act',
-    status:
-      input.approval &&
-      input.approval.pr_id === input.stored_pr_body?.pr_id &&
-      input.approval.fingerprint === input.stored_pr_body?.integrity?.fingerprint
-        ? 'pass'
-        : 'fail',
-    reason:
-      input.approval &&
-      input.approval.pr_id === input.stored_pr_body?.pr_id &&
-      input.approval.fingerprint === input.stored_pr_body?.integrity?.fingerprint
-        ? 'PR ID and fingerprint match approval.'
-        : 'Approval does not match stored PR.',
+    status: idFpMatch ? 'pass' : 'fail',
+    reason: idFpMatch
+      ? 'Approval references this PR id and the correct fingerprint.'
+      : 'Approval PR id / fingerprint does not match this PR.',
+    remediation: idFpMatch ? undefined : 'Approve the exact PR id and fingerprint shown.',
   });
 
   gates.push({
     id: 'explicit_approval_present',
     phase: 'act',
-    status: input.approval ? 'pass' : 'fail',
-    reason: input.approval ? 'Explicit approval found.' : 'No approval present.',
+    status: approval ? 'pass' : 'fail',
+    reason: approval ? 'An explicit approval record is present.' : 'No explicit approval was supplied.',
+    remediation: approval ? undefined : 'Provide an explicit fingerprint-bound approval.',
   });
 
-  gates.push({
-    id: 'not_expired',
-    phase: 'act',
-    status:
-      new Date(input.current_clock).getTime() < new Date(input.stored_pr_body?.expires_at).getTime() ? 'pass' : 'fail',
-    reason:
-      new Date(input.current_clock).getTime() < new Date(input.stored_pr_body?.expires_at).getTime()
-        ? 'PR has not expired.'
-        : 'PR is expired.',
-  });
-
-  gates.push({
-    id: 'critical_qonto_state_unchanged',
-    phase: 'act',
-    status:
-      input.fresh_invoice.status === input.stored_pr_body?.critical_state_display?.status &&
-      input.fresh_invoice.amount.value === input.stored_pr_body?.critical_state_display?.amount?.value
-        ? 'pass'
-        : 'fail',
-    reason:
-      input.fresh_invoice.status === input.stored_pr_body?.critical_state_display?.status &&
-      input.fresh_invoice.amount.value === input.stored_pr_body?.critical_state_display?.amount?.value
-        ? 'Critical Qonto state is unchanged.'
-        : 'Qonto state has changed; PR is stale.',
-  });
-
-  gates.push({
-    id: 'amount_currency_iban_supplier_unchanged',
-    phase: 'act',
-    status:
-      input.fresh_invoice.amount.currency === input.stored_pr_body?.critical_state_display?.amount?.currency &&
-      input.fresh_invoice.supplier_name === input.stored_pr_body?.critical_state_display?.supplier_name
-        ? 'pass'
-        : 'fail',
-    reason: 'Amount, currency, IBAN, supplier verification.',
-  });
-
-  gates.push({
-    id: 'prepared_action_exact_match',
-    phase: 'act',
-    status: true ? 'pass' : 'fail',
-    reason: 'Prepared action matches what was stored.',
-  });
-
+  const routeOk = Boolean(approval && approval.route === body.policy.reviewer_route && body.policy.reviewer_route !== 'none');
   gates.push({
     id: 'approval_route_satisfied',
     phase: 'act',
-    status:
-      input.approval && input.approval.route === input.stored_pr_body?.policy?.reviewer_route ? 'pass' : 'fail',
-    reason: 'Approval route matches policy requirement.',
+    status: routeOk ? 'pass' : 'fail',
+    reason: routeOk
+      ? `Approval came via the required route (${body.policy.reviewer_route}).`
+      : `Approval route does not satisfy the required route (${body.policy.reviewer_route}).`,
+    remediation: routeOk ? undefined : 'Route the approval through the required reviewer.',
+  });
+
+  const notExpired = Date.parse(nowIso) < Date.parse(body.expires_at);
+  gates.push({
+    id: 'not_expired',
+    phase: 'act',
+    status: notExpired ? 'pass' : 'fail',
+    reason: notExpired ? 'PR is within its validity window.' : 'PR has expired.',
+    remediation: notExpired ? undefined : 'Re-prepare a fresh Finance PR.',
+  });
+
+  const freshDigest = criticalStateDigest(freshInvoice);
+  const stateUnchanged = freshDigest === body.critical_state_digest;
+  gates.push({
+    id: 'critical_qonto_state_unchanged',
+    phase: 'act',
+    status: stateUnchanged ? 'pass' : 'fail',
+    reason: stateUnchanged
+      ? 'Critical Qonto state digest is unchanged since Prepare.'
+      : 'Critical Qonto state changed since Prepare.',
+    remediation: stateUnchanged ? undefined : 'Re-observe and re-prepare; do not act on stale state.',
+  });
+
+  const diffs = criticalFieldDiffs(body, freshInvoice);
+  gates.push({
+    id: 'amount_currency_iban_supplier_unchanged',
+    phase: 'act',
+    status: diffs.length === 0 ? 'pass' : 'fail',
+    reason: diffs.length === 0
+      ? 'Amount, currency, IBAN, supplier, and status are unchanged.'
+      : `Critical field(s) changed: ${diffs.join('; ')}.`,
+    remediation: diffs.length === 0 ? undefined : 'Block regardless of score; re-prepare.',
+  });
+
+  const actionOk =
+    body.proposed_action.type === 'prepare_payment_review' &&
+    body.proposed_action.target_object.id === body.target.invoice_id &&
+    freshInvoice.id === body.target.invoice_id;
+  gates.push({
+    id: 'prepared_action_exact_match',
+    phase: 'act',
+    status: actionOk ? 'pass' : 'fail',
+    reason: actionOk
+      ? 'The action to run is exactly the stored, allowlisted prepared action.'
+      : 'The action/target does not match the stored prepared action.',
+    remediation: actionOk ? undefined : 'Act never accepts replacement parameters; re-prepare.',
+  });
+
+  gates.push({
+    id: 'not_used_or_in_progress',
+    phase: 'act',
+    status: reservationAvailable ? 'pass' : 'fail',
+    reason: reservationAvailable ? 'One-shot reservation is available.' : 'PR was already used or is in progress — replay blocked.',
+    remediation: reservationAvailable ? undefined : 'Each PR is single-use; re-prepare for a new action.',
   });
 
   gates.push({
     id: 'writes_explicitly_enabled_for_test',
     phase: 'act',
-    status: input.writesEnabled ? 'pass' : 'fail',
-    reason: input.writesEnabled
-      ? 'Writes explicitly enabled for controlled test.'
+    status: writesEnabled ? 'pass' : 'fail',
+    reason: writesEnabled
+      ? 'Controlled write flag is explicitly enabled for this test.'
       : 'Qonto writes are disabled by default — Act stops at a verified ready_for_qonto handoff.',
   });
 

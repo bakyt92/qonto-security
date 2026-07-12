@@ -1,86 +1,189 @@
-import { hashBody, fingerprintFromHash } from './canonical.js';
-import { criticalStateDigest, criticalStateDisplay } from './critical.js';
+// PREPARE — build the immutable, hashed Finance PR. Zero Qonto mutation.
+
+import type { Clock } from './clock.js';
+import { addMinutes } from './clock.js';
+import type { EventLog } from './events.js';
 import { classifyIntent } from './intent.js';
 import { evaluateSignals } from './signals.js';
 import { prepareGates, allPass } from './gates.js';
+import { criticalStateDigest, criticalStateDisplay } from './critical.js';
+import { canonicalize, digest, fingerprintFromHash } from './canonical.js';
+import { sha256 } from 'js-sha256';
 import { POLICY, policyDigest } from './policy.js';
-import { HeuristicReviewer } from './reviewer.js';
-import type { Clock } from './clock.js';
-import { EventLog } from './events.js';
-import { addMinutes } from './clock.js';
-import type { Evidence, FinancePrBody, PolicyDecision, PrepareResult, ReviewerRoute, StoredPr, UserRequest } from './types.js';
+import { maskId, maskIban, stripSensitive } from './redact.js';
+import type { HeuristicReviewer, IndependentReviewer } from './reviewer.js';
+import {
+  SCHEMA_VERSION,
+  type Evidence,
+  type EvidenceRef,
+  type FinancePrBody,
+  type Gate,
+  type IntentResult,
+  type PolicyDecision,
+  type ReviewerRoute,
+  type ReviewOutput,
+  type RiskSummary,
+  type Signal,
+  type StoredPr,
+  type UserRequest,
+} from './types.js';
 
-export function prepare(input: {
+export interface PrepareInput {
   request: UserRequest;
   evidence: Evidence;
   clock: Clock;
   events: EventLog;
+  /** explicit id for deterministic scenarios; otherwise derived. */
   prId?: string;
-}): PrepareResult {
-  const { request, evidence, clock, events, prId } = input;
-  const now = clock.now();
+  /** optional escalate-only reviewer. */
+  reviewer?: IndependentReviewer | HeuristicReviewer | null;
+}
 
-  // Classify intent
-  const intent = classifyIntent(request, evidence.invoice.attachment_text);
-  events.emit('intent_classified', prId || 'pending', { intent_class: intent.intent_class });
+export interface PrepareResult {
+  stored: StoredPr;
+  intent: IntentResult;
+  signals: Signal[];
+  risk: RiskSummary;
+  gates: Gate[];
+  decision: PolicyDecision;
+  reviewer_route: ReviewerRoute;
+  review: ReviewOutput | null;
+}
 
-  // Evaluate signals
-  const { signals, risk } = evaluateSignals(evidence, intent);
-  events.emit('signals_evaluated', prId || 'pending', { observed_risk: risk.observed_risk, coverage: risk.coverage });
+function buildEvidenceRefs(ev: Evidence): EvidenceRef[] {
+  const refs: EvidenceRef[] = [
+    {
+      source: ev.data_mode,
+      object_type: 'organization',
+      object_id_masked: maskId(ev.organization.id),
+      fetched_at: ev.observed_at,
+      available: true,
+      critical_digest: 'n/a',
+    },
+    {
+      source: ev.data_mode,
+      object_type: 'supplier_invoice',
+      object_id_masked: maskId(ev.invoice.id),
+      fetched_at: ev.observed_at,
+      available: true,
+      critical_digest: criticalStateDigest(ev.invoice),
+    },
+    {
+      source: ev.data_mode,
+      object_type: 'supplier_history',
+      object_id_masked: `${ev.supplier_history.length} record(s)`,
+      fetched_at: ev.observed_at,
+      available: true,
+      critical_digest: digest('history', JSON.stringify(ev.supplier_history)),
+    },
+  ];
+  for (const f of ev.unavailable_fields) {
+    refs.push({
+      source: ev.data_mode,
+      object_type: f,
+      object_id_masked: 'unavailable',
+      fetched_at: ev.observed_at,
+      available: false,
+      critical_digest: 'n/a',
+    });
+  }
+  return refs;
+}
 
-  // Evaluate gates
-  const gates = prepareGates(evidence, intent);
-  events.emit('gates_evaluated_prepare', prId || 'pending', {
-    pass_count: gates.filter((g) => g.status === 'pass').length,
-  });
-
-  // Policy decision
-  let decision: PolicyDecision = 'ready_for_finance_review';
-  let reviewer_route: ReviewerRoute = 'finance_reviewer';
-
-  if (!allPass(gates)) {
-    decision = 'blocked';
-    reviewer_route = 'finance_reviewer';
-  } else if (risk.coverage < POLICY.min_coverage || (risk.observed_risk ?? 0) >= POLICY.material_signal_risk) {
-    decision = 'manual_review_required';
-    reviewer_route = 'designated_approver';
+function decide(
+  ev: Evidence,
+  prepGates: Gate[],
+  signals: Signal[],
+  risk: RiskSummary,
+  review: ReviewOutput | null,
+): { decision: PolicyDecision; route: ReviewerRoute } {
+  if (!allPass(prepGates)) {
+    return { decision: 'blocked', route: 'returned' };
   }
 
-  // Build immutable body
+  const amount = Number.parseFloat(ev.invoice.amount.value);
+  const highValue = Number.isFinite(amount) && amount >= POLICY.high_value_amount;
+  const ibanDrift = signals.find((s) => s.id === 'supplier_iban_drift');
+  const ibanDriftHigh = ibanDrift?.status === 'observed' && ibanDrift.risk >= POLICY.material_signal_risk;
+  const materialSignal = signals.some((s) => s.status === 'observed' && s.risk >= POLICY.material_signal_risk);
+  const lowCoverage = risk.coverage < POLICY.min_coverage;
+  const reviewEscalates = Boolean(review && review.verdict !== 'agree');
+
+  if (highValue || ibanDriftHigh) {
+    return { decision: 'manual_review_required', route: 'designated_approver' };
+  }
+  if (materialSignal || lowCoverage || reviewEscalates) {
+    return { decision: 'manual_review_required', route: 'finance_reviewer' };
+  }
+  return { decision: 'ready_for_finance_review', route: 'finance_reviewer' };
+}
+
+export function prepare(input: PrepareInput): PrepareResult {
+  const { request, evidence: ev, clock, events } = input;
+
+  // created_at fixed first so it is deterministic and distinct from event times.
+  const created_at = clock.now();
+  const expires_at = addMinutes(created_at, POLICY.pr_ttl_minutes);
+  const pr_id = input.prId ?? `FPR-${digest(ev.invoice.id, created_at, request.text).slice(0, 6).toUpperCase()}`;
+
+  const intent = classifyIntent(request, ev.invoice.attachment_text);
+  const { signals, risk } = evaluateSignals(ev, intent);
+  const gates = prepareGates(ev, intent);
+
+  // Optional escalate-only independent review (ambiguous / high-value only).
+  let review: ReviewOutput | null = null;
+  const amount = Number.parseFloat(ev.invoice.amount.value);
+  const highValue = Number.isFinite(amount) && amount >= POLICY.high_value_amount;
+  if (input.reviewer && (intent.intent_class === 'AMBIGUOUS' || highValue || risk.band === 'high_observed_risk')) {
+    events.emit('second_review_requested', pr_id, { reviewer: input.reviewer.id });
+    review = input.reviewer.review({
+      intent_class: intent.intent_class,
+      band: risk.band,
+      coverage: risk.coverage,
+      amount_value: ev.invoice.amount.value,
+      currency: ev.invoice.amount.currency,
+      signals: signals.map((s) => ({ id: s.id, status: s.status, risk: s.risk })),
+      instructions_detected: intent.detected_instructions.length > 0,
+    });
+    events.emit('second_review_returned', pr_id, { verdict: review.verdict });
+  }
+
+  const { decision, route } = decide(ev, gates, signals, risk, review);
+
   const body: FinancePrBody = {
-    schema_version: '1.0',
-    pr_id: prId || `FPR-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
-    data_mode: evidence.data_mode,
-    created_at: now,
-    expires_at: addMinutes(now, POLICY.pr_ttl_minutes),
+    schema_version: SCHEMA_VERSION,
+    pr_id,
+    data_mode: ev.data_mode,
+    created_at,
+    expires_at,
     intent: {
-      literal_request: request.text,
+      literal_request: stripSensitive(request.text),
       request_source: request.source,
+      message_id: request.message_id,
       intent_class: intent.intent_class,
       interpretation: intent.interpretation,
       ambiguity_notes: intent.ambiguity_notes,
     },
     target: {
-      organization_id: evidence.organization.id,
-      invoice_id: evidence.invoice.id,
-      invoice_number: evidence.invoice.invoice_number,
+      organization_id_masked: maskId(ev.organization.id),
+      invoice_id: ev.invoice.id,
+      invoice_number: ev.invoice.invoice_number,
+      supplier_name: ev.invoice.supplier_name,
+      supplier_id: ev.invoice.supplier_id,
     },
     proposed_action: {
-      action_type: 'prepare_payment_review',
+      type: 'prepare_payment_review',
+      target_object: { object_type: 'supplier_invoice', id: ev.invoice.id },
       parameters: {
-        supplier_name: evidence.invoice.supplier_name,
-        supplier_id: evidence.invoice.supplier_id,
-        amount: evidence.invoice.amount as unknown,
-        iban: evidence.invoice.iban,
-        invoice_number: evidence.invoice.invoice_number,
+        amount: ev.invoice.amount,
+        supplier_name: ev.invoice.supplier_name,
+        supplier_id: ev.invoice.supplier_id,
+        iban_masked: maskIban(ev.invoice.iban),
       },
     },
-    critical_state_digest: criticalStateDigest(evidence.invoice),
-    critical_state_display: criticalStateDisplay(evidence.invoice),
-    evidence: [
-      { object_type: 'supplier_invoice', id: evidence.invoice.id, fetched_at: evidence.observed_at },
-      { object_type: 'organization', id: evidence.organization.id, fetched_at: evidence.observed_at },
-    ],
+    critical_state_digest: criticalStateDigest(ev.invoice),
+    critical_state_display: criticalStateDisplay(ev.invoice),
+    evidence: buildEvidenceRefs(ev),
     signals,
     risk,
     gates,
@@ -89,35 +192,52 @@ export function prepare(input: {
       policy_version: POLICY.policy_version,
       policy_digest: policyDigest(),
       decision,
-      reviewer_route,
+      reviewer_route: route,
     },
     sanitization: {
+      untrusted_sources: ['supplier_invoice.attachment_text'],
       detected_instructions: intent.detected_instructions,
+      redaction_summary: 'IBANs masked to last 4; object ids masked; URLs/tokens stripped.',
     },
   };
 
-  // Hash and store
-  const hash = hashBody(body);
+  const hash = sha256(canonicalize(body));
   const fingerprint = fingerprintFromHash(hash);
-  const stored: StoredPr = {
-    body,
-    integrity: { algorithm: 'sha256', hash, fingerprint },
-  };
+  const stored: StoredPr = { body, integrity: { algorithm: 'sha256', hash, fingerprint } };
 
-  events.emit('finance_pr_prepared', body.pr_id, {
-    fingerprint,
-    decision,
-    reviewer_route,
+  // Events (Observe is represented by the first two; Prepare by the rest).
+  events.emit('invoice_observed', pr_id, {
+    data_mode: ev.data_mode,
+    supplier: ev.invoice.supplier_name,
+    invoice_number: ev.invoice.invoice_number,
   });
-
-  // Optional second review
-  const reviewer = new HeuristicReviewer();
-  const amountObj = body.proposed_action.parameters.amount as any;
-  const review = reviewer.review({
-    body,
-    intent_ambiguous: intent.intent_class === 'AMBIGUOUS',
-    high_value: amountObj?.value ? parseFloat(amountObj.value) >= POLICY.high_value_amount : false,
+  events.emit('evidence_collected', pr_id, {
+    evidence_count: body.evidence.length,
+    unavailable: ev.unavailable_fields,
   });
+  events.emit('intent_classified', pr_id, {
+    intent_class: intent.intent_class,
+    source_is_authoritative: intent.source_is_authoritative,
+  });
+  for (const s of signals) {
+    events.emit('signal_evaluated', pr_id, { id: s.id, status: s.status, risk: s.risk, weight: s.weight });
+  }
+  for (const g of gates) {
+    events.emit('hard_gate_evaluated', pr_id, { id: g.id, status: g.status });
+  }
 
-  return { stored, intent, signals, risk, gates, decision, reviewer_route, review };
+  if (decision === 'blocked') {
+    events.emit('finance_pr_blocked', pr_id, { fingerprint, reason: 'A required Prepare gate failed.' });
+  } else {
+    events.emit('finance_pr_prepared', pr_id, {
+      fingerprint,
+      decision,
+      route,
+      band: risk.band,
+      coverage: risk.coverage,
+    });
+    events.emit('finance_review_requested', pr_id, { route });
+  }
+
+  return { stored, intent, signals, risk, gates, decision, reviewer_route: route, review };
 }
