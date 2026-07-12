@@ -60,7 +60,9 @@ Status vocabulary: **Accepted**, **Provisional**, **Rejected**, **Roadmap**.
 
 ## ADR-008 — Five MVP risk signals
 
-- Status: **Provisional** pending real Qonto field inventory.
+- Status: **Accepted** — confirmed by the completed tool inventory
+  (docs/QONTO_TOOL_INVENTORY.md). Sandbox supplier invoices expose `iban: null`,
+  so IBAN drift is demonstrated on clearly labelled synthetic history.
 - Decision: possible duplicate 0.30, supplier IBAN drift 0.30, unusual amount 0.20, optional evidence gap 0.10, untrusted-instruction indicator 0.10.
 - Why: these map to the strongest supplier-invoice review story and minimize correlation.
 - Origin: TrustGateway concepts + Qonto/new design.
@@ -89,13 +91,19 @@ Status vocabulary: **Accepted**, **Provisional**, **Rejected**, **Roadmap**.
 - Origin: product requirement + new design.
 - Consequence: fingerprint is not claimed collision-proof or authentic; signatures are roadmap.
 
-## ADR-012 — SQLite for MVP lifecycle store
+## ADR-012 — Local store with atomic compare-and-set (amended from SQLite)
 
-- Status: **Provisional** for Claude to confirm.
-- Decision: prefer local SQLite for immutable records, append-only events, and atomic one-shot reservation.
-- Why: available in standard Python, no service installation, stronger replay protection than loose JSON files.
-- Origin: new design.
-- Consequence: distributed production execution requires a centralized store.
+- Status: **Accepted as amended.** The implementation uses a file-backed store
+  (`src/node/fileStore.ts`) whose one-shot reservation is an atomic exclusive
+  create (`open "wx"`), plus an in-memory store for browser/tests — the same
+  compare-and-set guarantee the constitution requires, without a SQLite
+  dependency in a TypeScript codebase.
+- Decision: immutable PR bodies written once; approvals, acts, lifecycle, and
+  events stored outside the hashed body; reservation is single-winner atomic.
+- Why: the original SQLite suggestion assumed a Python engine; the final engine
+  is TypeScript and the file primitive gives equivalent replay protection.
+- Origin: new design, amended during implementation.
+- Consequence: distributed production execution still requires a centralized store.
 
 ## ADR-013 — Skill orchestrates; it is not enforcement
 

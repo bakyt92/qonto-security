@@ -101,4 +101,5 @@ result to "paid" or "approved".
 - Green means "no material risk observed; ready for Finance review", never
   "safe", "paid", or "Qonto-approved".
 
-See `references/` for the CLI reference, the Qonto read recipe, and the schemas.
+See `references/` for the CLI reference (`cli.md`) and the Qonto read recipe
+(`qonto-reads.md`).

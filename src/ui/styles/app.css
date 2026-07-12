@@ -152,7 +152,8 @@
   color: var(--ink-3);
 }
 .zone--qonto .zone__label { color: rgba(177, 139, 255, 0.8); }
-.zone--before .zone__label { color: rgba(43, 212, 196, 0.75); }
+/* Bottom-left so the PR token (which starts above Invoice Intake) never covers it. */
+.zone--before .zone__label { color: rgba(43, 212, 196, 0.75); top: auto; bottom: 10px; }
 
 .wires {
   position: absolute;

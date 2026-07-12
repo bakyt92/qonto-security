@@ -17,6 +17,9 @@ It moves no money and completes no 2FA. Qonto stays the execution authority.
 
 ![Clean invoice crossing the Qonto boundary](docs/screenshots/02-clean-crossed.png)
 
+**3-minute demo video:** _link to be added after recording_ (script:
+`docs/DEMO_3_MINUTES.md`).
+
 ---
 
 ## Quickstart (one command, no credentials)
